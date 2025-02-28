@@ -1,0 +1,72 @@
+import requests
+from bs4 import BeautifulSoup
+from fastapi import FastAPI, Request
+from twilio.rest import Client
+import os
+import ssl
+import asyncio
+import uvicorn
+
+try:
+    ssl._create_default_https_context = ssl._create_unverified_context
+except AttributeError:
+    pass
+
+app = FastAPI()
+
+TWILIO_ACCOUNT_SID = os.getenv("TWILIO_ACCOUNT_SID")
+TWILIO_AUTH_TOKEN = os.getenv("TWILIO_AUTH_TOKEN")
+TWILIO_WHATSAPP_NUMBER = os.getenv("TWILIO_WHATSAPP_NUMBER")
+MY_WHATSAPP_NUMBER = os.getenv("MY_WHATSAPP_NUMBER")
+
+if not all([TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN, TWILIO_WHATSAPP_NUMBER, MY_WHATSAPP_NUMBER]):
+    raise ValueError("Missing Twilio environment variables")
+
+client = Client(TWILIO_ACCOUNT_SID, TWILIO_AUTH_TOKEN)
+
+def get_cricket_score():
+    url = "https://www.espncricinfo.com/live-cricket-score"
+    headers = {"User-Agent": "Mozilla/5.0"}
+    
+    try:
+        response = requests.get(url, headers=headers, timeout=10)
+        response.raise_for_status()
+    except requests.exceptions.RequestException:
+        return "Error fetching cricket scores."
+    
+    soup = BeautifulSoup(response.text, "html.parser")
+    match_info = []
+    
+    matches = soup.find_all("div", class_="ds-flex ds-items-center ds-flex-col")
+    
+    for match in matches:
+        title_tag = match.find("h3")
+        score_tag = match.find("div", class_="ds-text-tight-m")
+        title = title_tag.text.strip() if title_tag else "No Title"
+        score = score_tag.text.strip() if score_tag else "No Score Available"
+        match_info.append(f"{title}: {score}")
+    
+    return "\n".join(match_info) if match_info else "No matches found."
+
+@app.get("/cricket-score")
+def cricket_score():
+    return {"scores": get_cricket_score()}
+
+@app.post("/whatsapp")
+async def send_whatsapp_message():
+    message_body = get_cricket_score()
+    if not message_body or "Error" in message_body:
+        return {"error": "Unable to fetch scores"}
+    
+    try:
+        message = client.messages.create(
+            from_=f"whatsapp:{TWILIO_WHATSAPP_NUMBER}",
+            body=message_body,
+            to=f"whatsapp:{MY_WHATSAPP_NUMBER}"
+        )
+        return {"message_sid": message.sid}
+    except Exception as e:
+        return {"error": str(e)}
+
+if __name__ == "__main__":
+    uvicorn.run(app, host="0.0.0.0", port=8000)
